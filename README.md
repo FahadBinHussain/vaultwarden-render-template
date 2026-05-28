@@ -36,9 +36,3 @@ Paste the two base64 outputs into `VW_RSA_KEY` and `VW_RSA_PUB_KEY`.
 ## Render
 
 Create a Web Service from this repository, add a persistent disk mounted at `/data`, and use the default Docker build settings. Render will start the container with the `CMD` in this repository.
-
-## Contributors
-
-<a href="https://github.com/FahadBinHussain/vaultwarden-render-template/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=FahadBinHussain/vaultwarden-render-template" alt="Contributors" />
-</a>
