@@ -42,3 +42,24 @@ Two things that make the failure look worse than it is:
 
 - `/alive` returns a bare ISO timestamp wrapped in quotes, not `OK`. Judge runs by HTTP status, not by body text.
 - cron-job.org sends no further failure emails until a run succeeds, so silence after a failure email means "unknown", not "recovered".
+
+
+## Supabase connection drop & silent item disappearance (2026-10-28)
+
+### Symptom
+Every morning, the first item saved via the Bitwarden client (extension/mobile/web) appeared to save successfully, but then silently vanished after a few seconds or on subsequent sync.
+
+### Root Cause
+1. **Keep-alive decoupling:** `cron-job.org` pings `/alive` to keep the Render free web service container awake. However, `/alive` is an in-memory Rocket endpoint returning a static timestamp (`chrono::Utc::now()`) without querying PostgreSQL.
+2. **Idle socket termination:** Over long idle gaps (overnight 6-8+ hours with zero queries), AWS stateful firewalls / NAT gateways and Supabase's Supavisor pooler prune idle TCP connections from their state tables without a clean TCP FIN/RST.
+3. **Zombie pool connections:** Without TCP keepalives in `DATABASE_URL` (`keepalives=1`), the Linux socket on Render remains open in `ESTABLISHED`. When the client sends `POST /api/ciphers` in the morning, `r2d2` retrieves a dead connection and tries to ping (`SELECT 1`). Because the NAT state is gone, packets are silently dropped and retransmitted until `DATABASE_TIMEOUT` (30s) or the client's internal timeout aborts.
+4. **Optimistic save & desync:** The Bitwarden extension UI dismisses the save prompt optimistically or assumes success before the request times out. When the client subsequently runs `GET /api/sync` (or reconnects WebSocket), `r2d2` has evicted the broken socket and opened a fresh connection. The sync fetches the database state which lacks the uncommitted item, overwriting the client cache and making the item vanish.
+
+### Fix Applied
+1. **TCP keepalives in `DATABASE_URL`:**
+   Appended query parameters: `keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=3&tcp_user_timeout=30000`. Keepalive probes every 30s ensure NAT tables never drop the session.
+2. **Connection pool recycling env vars:**
+   - `DATABASE_IDLE_TIMEOUT=120`: Closes idle connections after 2 minutes instead of default 600s.
+   - `DATABASE_TIMEOUT=15`: Fails dead connection checkouts quickly (15s) so callers recover fast.
+   - `DATABASE_MAX_CONNS=10`: Explicit connection cap for the Supabase session pooler.
+3. **Reminder:** When updating env vars via `PUT https://api.render.com/v1/services/{id}/env-vars`, always send the complete array containing all 8 variables.
